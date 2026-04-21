@@ -28,6 +28,7 @@ jobs:
       - name: Phân tích và chia cụm app
         id: set-matrix
         run: |
+          pip install curl_cffi
           MATRIX_JSON=$(python updater.py prepare)
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
