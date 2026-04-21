@@ -1,0 +1,112 @@
+name: Optimized Matrix Auto Update
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Chạy tự động mỗi 6 tiếng
+  workflow_dispatch:      # Bấm chạy bằng tay
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================
+  # JOB 1: CHUẨN BỊ MATRIX (CHIA CỤM)
+  # ==========================================
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Phân tích và chia cụm app
+        id: set-matrix
+        run: |
+          MATRIX_JSON=$(python updater.py prepare)
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+
+  # ==========================================
+  # JOB 2: XỬ LÝ SONG SONG CÁC CỤM
+  # ==========================================
+  process:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Cài đặt thư viện hệ thống và Python
+        run: |
+          sudo apt-get update && sudo apt-get install -y aapt
+          pip install curl_cffi
+
+      - name: Xử lý cụm App [${{ matrix.chunk }}]
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python updater.py process "${{ matrix.chunk }}"
+
+      - name: Upload Artifact Cập Nhật
+        uses: actions/upload-artifact@v4
+        with:
+          # Dùng strategy.job-index để tên artifact luôn hợp lệ (không chứa dấu phẩy)
+          name: update-data-chunk-${{ strategy.job-index }}
+          path: update_*.json
+          if-no-files-found: ignore
+
+  # ==========================================
+  # JOB 3: TỔNG HỢP VÀ COMMIT CODE
+  # ==========================================
+  finalize:
+    needs: process
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Tải xuống tất cả dữ liệu Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: updates/
+          pattern: update-data-chunk-*
+          merge-multiple: true
+
+      - name: Ghi đè source.json và Push lên Github
+        run: |
+          cp updates/*.json ./ 2>/dev/null || true
+          
+          RESULT=$(python updater.py finalize)
+          
+          if [[ "$RESULT" == *"ready_to_commit"* ]]; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add source.json
+            git commit -m "chore: auto update app versions in source.json [skip ci]"
+            git push
+            echo "[+] Đã commit file source.json mới thành công!"
+          else
+            echo "[-] Không có bản cập nhật nào mới. Bỏ qua commit."
+          fi
