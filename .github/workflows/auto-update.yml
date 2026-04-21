@@ -97,6 +97,7 @@ jobs:
 
       - name: Ghi đè source.json và Push lên Github
         run: |
+          pip install curl_cffi
           cp updates/*.json ./ 2>/dev/null || true
           
           RESULT=$(python updater.py finalize)
