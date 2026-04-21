@@ -1,6 +1,10 @@
 {
-    "Youtube-Morphe": {
+    "Youtube-Morphe-FiorenMas": {
         "download_url": "https://github.com/FiorenMas/Revanced-And-Revanced-Extended-Non-Root/releases/download/all/youtube-arm64-v8a-morphe.apk",
         "version": "20.45.36"
+    },
+    "GooglePhotos-DeRevanced-FiorenMas": {
+        "download_url": "https://github.com/FiorenMas/Revanced-And-Revanced-Extended-Non-Root/releases/download/all/gg-photos-arm64-v8a-derevanced.apk",
+        "version": "1.0"
     }
 }
