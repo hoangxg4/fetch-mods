@@ -8,25 +8,19 @@ import glob
 # Dùng curl_cffi giả lập trình duyệt Chrome để Bypass Cloudflare
 from curl_cffi import requests
 
+# Import fetchers
+from fetchers.registry import get_fetcher, FETCHER_REGISTRY
+
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY")
 
-def get_apk_version(apk_path):
-    """Trích xuất versionName từ file APK bằng aapt"""
-    try:
-        result = subprocess.run(['aapt', 'dump', 'badging', apk_path], capture_output=True, text=True, check=True)
-        match = re.search(r"versionName='([^']+)'", result.stdout)
-        return match.group(1) if match else None
-    except Exception as e:
-        print(f"[-] Lỗi đọc APK bằng aapt: {e}")
-        return None
 
-def notify(app_name, version, tag_name):
+def notify(app_name, version, tag_name, apk_url=""):
     """Gửi thông báo qua Discord và Telegram"""
     release_url = f"https://github.com/{GITHUB_REPOSITORY}/releases/tag/{tag_name}"
-    apk_dl_url = f"https://github.com/{GITHUB_REPOSITORY}/releases/download/{tag_name}/{app_name}_v{version}.apk"
+    apk_dl_url = apk_url or f"https://github.com/{GITHUB_REPOSITORY}/releases/download/{tag_name}/{app_name}_v{version}.apk"
     
     # Gửi Discord Notification
     if DISCORD_WEBHOOK:
@@ -51,6 +45,7 @@ def notify(app_name, version, tag_name):
             requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}, impersonate="chrome")
         except Exception as e:
             print(f"[-] Lỗi gửi Telegram: {e}")
+
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -79,10 +74,26 @@ def main():
         for app_name in apps_in_chunk:
             if app_name not in data:
                 continue
-                
+            
             info = data[app_name]
             current_version = info['version']
-            download_url = info['download_url']
+            
+            # Get source type (default to direct for backward compatibility)
+            source_type = info.get('source_type', 'direct')
+            
+            # Get fetcher
+            fetcher = get_fetcher(source_type)
+            if not fetcher:
+                print(f"    [-] Unknown source_type: {source_type}")
+                continue
+            
+            # Build kwargs from info
+            # Support both 'url' and 'download_url' fields
+            kwargs = {}
+            if 'url' in info:
+                kwargs['url'] = info['url']
+            if 'download_url' in info:
+                kwargs['download_url'] = info['download_url']
             
             temp_apk = f"temp_{app_name}.apk"
             apk_name = ""
@@ -90,36 +101,42 @@ def main():
             print(f"\n[+] Bắt đầu quét: {app_name} (Bản hiện tại: v{current_version})")
             
             try:
-                r = requests.get(download_url, stream=True, timeout=60, impersonate="chrome")
-                r.raise_for_status() 
+                # Use fetcher to get latest version
+                result = fetcher.get_latest_version(app_name, current_version, **kwargs)
                 
-                with open(temp_apk, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk: f.write(chunk)
-                        
-                latest_version = get_apk_version(temp_apk)
-                
-                if latest_version and latest_version != current_version:
-                    print(f"    -> Đã có bản mới: v{latest_version}!")
-                    apk_name = f"{app_name}_v{latest_version}.apk"
-                    os.rename(temp_apk, apk_name)
+                if result and result.version != current_version:
+                    print(f"    -> Đã có bản mới: v{result.version}!")
+                    apk_name = f"{app_name}_v{result.version}.apk"
                     
-                    tag_name = f"{app_name}-v{latest_version}"
-                    subprocess.run(["gh", "release", "create", tag_name, apk_name, "--title", f"{app_name} v{latest_version}", "--notes", "Auto-update release"], check=True)
-                    notify(app_name, latest_version, tag_name)
+                    # Download APK
+                    r = requests.get(result.download_url, stream=True, timeout=60, impersonate="chrome")
+                    r.raise_for_status()
+                    
+                    with open(apk_name, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                    
+                    # Create GitHub release
+                    tag_name = f"{app_name}-v{result.version}"
+                    try:
+                        subprocess.run(["gh", "release", "create", tag_name, apk_name, "--title", f"{app_name} v{result.version}", "--notes", "Auto-update release"], check=True)
+                    except:
+                        pass  # May fail if not in GitHub Actions
+                    
+                    notify(app_name, result.version, tag_name, result.download_url)
                     
                     with open(f"update_{app_name}.json", "w") as f:
-                        json.dump({app_name: latest_version}, f)
+                        json.dump({app_name: result.version}, f)
                 else:
                     print(f"    -> Vẫn là bản cũ hoặc không lấy được metadata.")
             
             except Exception as e:
                 print(f"    [-] Lỗi khi xử lý {app_name}: {e}")
-                
+            
             finally:
                 if os.path.exists(temp_apk): os.remove(temp_apk)
                 if os.path.exists(apk_name): os.remove(apk_name)
-                
+            
         return
 
     # --- BƯỚC 3: CẬP NHẬT SOURCE.JSON ---
@@ -139,6 +156,7 @@ def main():
             print("ready_to_commit")
         else:
             print("no_changes")
+
 
 if __name__ == "__main__":
     main()
